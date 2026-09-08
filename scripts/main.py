@@ -8,8 +8,8 @@ GitHub Actions から毎日実行されるメイン処理。
   3. ミュート銘柄を除外
   4. 株探(kabutan)発の「本日のランキング【値上がり率】」記事(Yahoo!ファイナンス
      ニュース経由)から、銘柄ごとの短評をそのまま抜粋する(AIには推測させない)
-  5. 各銘柄について、Yahoo!ファイナンスのニュース・掲示板・X(Yahoo!リアルタイム検索)から
-     材料を集め、Claude APIで急騰理由の要約を行う(カテゴリ分類はAIにはさせない。
+  5. 各銘柄について、前営業日15:30以降のYahoo!ファイナンス掲示板の投稿を集め、
+     Claude APIで「掲示板の声まとめ」を作る(カテゴリ分類はAIにはさせない。
      `!tag` で手動登録されたカテゴリのみを使う)
   6. ミュートされたカテゴリ(手動タグ)の銘柄は「カテゴリ名 N件」とまとめ、詳細は表示しない
   7. Discordに投稿する
@@ -72,7 +72,7 @@ def build_message(shown, suppressed_counts, muted_count, total_found):
         lines.append(
             f"**{s['code']} {s['name']}**  **+{s['change_pct']:.1f}%**  ({s['price']}円){tag_suffix}"
         )
-        lines.append(s["reason"])
+        lines.append(f"🗣️ 掲示板まとめ: {s['bbs_summary']}")
         lines.append(f"📰 株探コメント: {s['kabutan_comment']}")
         lines.append("")
 
@@ -111,6 +111,8 @@ def main():
         [s["code"] for s in surges[:5]]
     )
 
+    bbs_cutoff = research.previous_business_day_1530()
+
     have_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     claude_calls = 0
     total_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -118,18 +120,16 @@ def main():
     shown = []
     suppressed_counts = {}
 
-    # 5. 各銘柄について材料を集め、理由を要約する(カテゴリはtagsからのみ取得)
+    # 5. 各銘柄について前営業日15:30以降の掲示板投稿を集め、声をまとめる
     for s in surges:
         code, name, pct = s["code"], s["name"], s["change_pct"]
-        news = yahoo_stocks.get_stock_news(code)
-        bbs_posts = research.get_yahoo_bbs(code)
-        x_posts = research.get_x_buzz(name)
+        bbs_posts = research.get_yahoo_bbs(code, bbs_cutoff)
 
-        reason = None
+        bbs_summary = None
         if have_key and claude_calls < MAX_CLAUDE_CALLS:
             try:
-                reason, usage = research.summarize_reason(
-                    code, name, pct, news, bbs_posts, x_posts, model=CLAUDE_MODEL
+                bbs_summary, usage = research.summarize_bbs(
+                    code, name, pct, bbs_posts, bbs_cutoff, model=CLAUDE_MODEL
                 )
                 claude_calls += 1
                 total_usage["input_tokens"] += usage["input_tokens"]
@@ -137,10 +137,10 @@ def main():
             except Exception as e:
                 print(f"[main] Claude summarize failed for {code}: {e}")
 
-        if not reason:
-            reason = research.fallback_reason(news)
+        if not bbs_summary:
+            bbs_summary = research.fallback_bbs_summary(bbs_posts)
 
-        s["reason"] = reason
+        s["bbs_summary"] = bbs_summary
         s["category"] = tags.get(code)
         s["kabutan_comment"] = kabutan_comments.get(code) or "記載なし"
 

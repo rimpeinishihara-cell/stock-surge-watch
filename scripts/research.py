@@ -1,7 +1,5 @@
 """
-Yahoo!ファイナンス掲示板・X(Yahoo!リアルタイム検索経由)から材料を集め、
-Claude APIで急騰理由の要約を行う。ニュース見出しは yahoo_stocks.py
-(Yahoo!ファイナンスのニュースタブ)から渡される。
+Yahoo!ファイナンス掲示板から「掲示板の声まとめ」を作る。
 
 カテゴリ分類(クソ株・バイオ株など)はAIに判定させない。掲示板・SNSの断片的な
 情報から推測するため誤判定(ハルシネーション)のリスクがあり、銘柄への評価に
@@ -13,14 +11,24 @@ yahoo_stocks.fetch_kabutan_ranking_comments() でスクレイピングにより�
 取得している(株探の「本日のランキング【値上がり率】」記事に銘柄ごとの
 短評が付いているため、そこから該当箇所をそのまま抜き出す)。
 
-- Yahoo!ファイナンス掲示板(/forum)は静的HTMLに投稿本文が含まれることを確認済み。
-- Xは公式APIが従量課金制のため、wom-buzz-watch と同じく
-  Yahoo!リアルタイム検索(X投稿の非公式ミラー)を代替として使う。
+## 掲示板の遡及範囲について
+
+前営業日15:30(前引け後の実質的な地合い区切り)以降の投稿をすべて対象に
+「掲示板の声まとめ」を作る設計にしている。ただし、Yahoo!ファイナンス掲示板の
+「もっと見る」(無限スクロール)は `bff-quote-stocks/v1/ajax/bbs/comment` という
+セッション依存のAPIを使っており、ブラウザの実セッションなしでは
+(同一パラメータで叩いても)`request parameters invalidated` で弾かれることを
+確認した。ヘッドレスブラウザは使わない方針のため、この深いページングは断念し、
+`/quote/XXXX.T/forum` への単純なGETで返ってくる分(出来高の多い銘柄でも
+数十〜100件程度、前営業日15:30まで届かないこともある)だけを使う。
+そこから前営業日15:30以降の投稿を最大200件まで抽出する。
 """
-import json
+from __future__ import annotations
+
 import os
 import re
-import urllib.parse
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -32,10 +40,27 @@ USER_AGENT = (
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "ja,en;q=0.9"}
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+JST = ZoneInfo("Asia/Tokyo")
 
 
-def get_yahoo_bbs(code: str, max_posts: int = 5):
-    """Yahoo!ファイナンス掲示板の直近の投稿本文を取得する。"""
+def previous_business_day_1530(now: datetime | None = None) -> datetime:
+    """
+    「前営業日15:30」を返す(土日はスキップする簡易実装。日本の祝日は
+    考慮していないため、祝日明けは実際より1営業日浅くなる場合がある)。
+    """
+    now = now or datetime.now(JST)
+    d = now.date() - timedelta(days=1)
+    while d.weekday() >= 5:  # 5=土, 6=日
+        d -= timedelta(days=1)
+    return datetime(d.year, d.month, d.day, 15, 30, tzinfo=JST)
+
+
+def get_yahoo_bbs(code: str, cutoff: datetime, max_posts: int = 200):
+    """
+    Yahoo!ファイナンス掲示板を取得し、cutoff以降の投稿本文を新しい順→古い順に
+    並べ替えて返す(最大max_posts件)。投稿は新しい順にレンダリングされているため、
+    cutoffより古い投稿に達した時点で打ち切る。
+    """
     url = f"https://finance.yahoo.co.jp/quote/{code}.T/forum"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
@@ -46,84 +71,70 @@ def get_yahoo_bbs(code: str, max_posts: int = 5):
         return []
     resp.encoding = "utf-8"
     soup = BeautifulSoup(resp.text, "html.parser")
+
     posts = []
-    for art in soup.select("article")[:max_posts]:
+    for art in soup.select("article"):
         text = art.get_text("\n", strip=True)
-        if text:
-            posts.append(text[:400])
-    return posts
+        if not text:
+            continue
+        m = re.search(r"(\d{4})/(\d{1,2})/(\d{1,2}) (\d{1,2}):(\d{2})", text)
+        if not m:
+            continue
+        y, mo, d, h, mi = map(int, m.groups())
+        try:
+            post_dt = datetime(y, mo, d, h, mi, tzinfo=JST)
+        except ValueError:
+            continue
+        if post_dt < cutoff:
+            break  # 新しい順に並んでいるため、以降は全て対象外
+        posts.append((post_dt, text[:250]))
+        if len(posts) >= max_posts:
+            break
+
+    posts.sort(key=lambda p: p[0])  # 古い順(時系列)に並べ直す
+    return [p[1] for p in posts]
 
 
-def get_x_buzz(keyword: str, max_posts: int = 5):
-    """Yahoo!リアルタイム検索経由でX(旧Twitter)の関連投稿を取得する。"""
-    url = f"https://search.yahoo.co.jp/realtime/search/{urllib.parse.quote(keyword)}"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-    except requests.RequestException as e:
-        print(f"[research] ERROR x buzz keyword={keyword}: {e}")
-        return []
-    if resp.status_code != 200:
-        return []
-    resp.encoding = "utf-8"
-    m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', resp.text, re.S)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(1))
-        entries = data["props"]["pageProps"]["pageData"].get("timeline", {}).get("entry", [])
-    except Exception:
-        return []
-    posts = []
-    for e in entries[:max_posts]:
-        text = (e.get("displayText") or "").strip()
-        if text:
-            posts.append(text[:300])
-    return posts
-
-
-def fallback_reason(news):
+def fallback_bbs_summary(bbs_posts):
     """Claude判定を使わない場合の簡易フォールバック。"""
-    if news:
-        return f"(材料未判定) 関連ニュース: {news[0]['title']}"
-    return "(材料未判定) 関連ニュースなし"
+    if bbs_posts:
+        return f"(要約未判定) 該当期間の投稿 {len(bbs_posts)}件あり"
+    return "(要約未判定) 該当期間の投稿なし"
 
 
-def _build_prompt(code, name, pct, news, bbs_posts, x_posts):
-    news_text = "\n".join(f"- ({n['datetime'][:10]}) {n['title']}" for n in news) or "(なし)"
-    bbs_text = "\n".join(f"- {p}" for p in bbs_posts) or "(なし)"
-    x_text = "\n".join(f"- {p}" for p in x_posts) or "(なし)"
-    return f"""以下は本日 +{pct:.1f}% 上昇した銘柄「{name}({code})」に関する情報です。
+def _build_bbs_prompt(code, name, pct, bbs_posts, cutoff):
+    cutoff_label = cutoff.strftime("%m/%d %H:%M")
+    posts_text = "\n".join(f"- {p}" for p in bbs_posts) or "(投稿なし)"
+    return f"""以下は、本日 +{pct:.1f}% 上昇した銘柄「{name}({code})」について、
+{cutoff_label}(前営業日15:30)以降にYahoo!ファイナンス掲示板へ投稿された
+全{len(bbs_posts)}件です(時系列順)。
 
-# Yahoo!ファイナンスニュース(この銘柄の最近のニュース見出し)
-{news_text}
+{posts_text}
 
-# Yahoo!ファイナンス掲示板の直近の投稿
-{bbs_text}
-
-# X(旧Twitter)の関連投稿(Yahoo!リアルタイム検索経由)
-{x_text}
-
-上記の情報から、この銘柄が本日値上がりした理由を1〜2文で日本語要約してください。
-複数銘柄をまとめた市況記事や無関係な投稿を、この銘柄固有の理由と誤って結び付けない
-でください。情報が乏しく理由が特定できない場合は、推測せずにその旨を明記してください。
-要約以外の文章(前置き・結び等)は不要です。
+上記の投稿すべてに目を通し、なぜこの銘柄が値上がりしているのかについて、
+投稿者たちが挙げている理由・材料・思惑を丹念に拾い集めて、日本語で2〜4文程度に
+まとめてください(「掲示板の声まとめ」)。特定の1投稿を鵜呑みにせず、複数の投稿で
+共通して言及されている内容を優先してください。単なる値動きへの感想(「上がった」
+「すごい」等)は理由ではないので除外してください。具体的な理由が投稿から読み取れ
+ない場合は、推測せずに「具体的な理由は投稿から確認できません」のように正直に述べて
+ください。要約以外の文章(前置き・結び等)は不要です。
 """
 
 
-def summarize_reason(code, name, pct, news, bbs_posts, x_posts, model=None):
+def summarize_bbs(code, name, pct, bbs_posts, cutoff, model=None):
     """
-    Claude APIで急騰理由の要約のみを行う(カテゴリ分類はしない)。
-    戻り値: (reason: str, usage: {"input_tokens", "output_tokens"})
+    Claude APIで「掲示板の声まとめ」を作る(カテゴリ分類はしない)。
+    戻り値: (summary: str, usage: {"input_tokens", "output_tokens"})
     """
     import anthropic
 
     model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
     client = anthropic.Anthropic()
 
-    prompt = _build_prompt(code, name, pct, news, bbs_posts, x_posts)
+    prompt = _build_bbs_prompt(code, name, pct, bbs_posts, cutoff)
     resp = client.messages.create(
         model=model,
-        max_tokens=300,
+        max_tokens=400,
         messages=[{"role": "user", "content": prompt}],
     )
     usage = {
@@ -131,5 +142,5 @@ def summarize_reason(code, name, pct, news, bbs_posts, x_posts, model=None):
         "output_tokens": resp.usage.output_tokens,
     }
     text_blocks = [b.text for b in resp.content if b.type == "text"]
-    reason = "".join(text_blocks).strip()
-    return reason, usage
+    summary = "".join(text_blocks).strip()
+    return summary, usage
