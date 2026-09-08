@@ -94,7 +94,7 @@ def main():
     # 1. コマンド処理を先に行う(ミュート設定を直後の判定に反映させるため)
     process_commands(client, channel_id)
 
-    mute_codes = set(storage.load("mute_codes.json", []))
+    mute_codes = commands.load_active_mute_codes()  # 期限切れは自動で間引かれる
     mute_categories = set(storage.load("mute_categories.json", []))
     tags = storage.load("tags.json", {})
 
