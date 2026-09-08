@@ -117,7 +117,8 @@ def _build_bbs_prompt(code, name, pct, bbs_posts, cutoff):
 共通して言及されている内容を優先してください。単なる値動きへの感想(「上がった」
 「すごい」等)は理由ではないので除外してください。具体的な理由が投稿から読み取れ
 ない場合は、推測せずに「具体的な理由は投稿から確認できません」のように正直に述べて
-ください。要約以外の文章(前置き・結び等)は不要です。
+ください。見出し(「# 掲示板の声まとめ」等)・箇条書き・前置き・結びは一切付けず、
+要約本文の地の文だけをそのまま出力してください。
 """
 
 
@@ -143,4 +144,6 @@ def summarize_bbs(code, name, pct, bbs_posts, cutoff, model=None):
     }
     text_blocks = [b.text for b in resp.content if b.type == "text"]
     summary = "".join(text_blocks).strip()
+    # 指示を無視して見出し行を付けてくることがあるため、念のため除去する
+    summary = re.sub(r"^#+\s*.*\n+", "", summary).strip()
     return summary, usage
