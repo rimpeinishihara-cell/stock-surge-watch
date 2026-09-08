@@ -3,12 +3,13 @@ GitHub Actions から毎日実行されるメイン処理。
 
 やること:
   1. コマンド用チャンネル(通知先と同じチャンネル)の新着メッセージを読み、
-     !mute / !addcat などのコマンドを実行して返信
-  2. 株探(kabutan.jp)の値上がり率ランキングから、+10%(既定)以上の銘柄を取得
+     !mute / !tag などのコマンドを実行して返信
+  2. Yahoo!ファイナンスの値上がり率ランキングから、+10%(既定)以上の銘柄を取得
   3. ミュート銘柄を除外
-  4. 各銘柄について、かぶたんニュース・Yahoo!掲示板・X(Yahoo!リアルタイム検索)から
-     材料を集め、Claude APIで急騰理由の要約とカテゴリ分類を行う
-  5. ミュートされたカテゴリの銘柄は「カテゴリ名 N件」とまとめ、詳細は表示しない
+  4. 各銘柄について、Yahoo!ファイナンスのニュース・掲示板・X(Yahoo!リアルタイム検索)から
+     材料を集め、Claude APIで急騰理由の要約を行う(カテゴリ分類はAIにはさせない。
+     `!tag` で手動登録されたカテゴリのみを使う)
+  5. ミュートされたカテゴリ(手動タグ)の銘柄は「カテゴリ名 N件」とまとめ、詳細は表示しない
   6. Discordに投稿する
 """
 import os
@@ -28,11 +29,13 @@ MAX_CLAUDE_CALLS = int(os.environ.get("MAX_CLAUDE_CALLS_PER_RUN") or "40")
 CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL") or research.DEFAULT_MODEL
 
 # $ / 1M tokens (input, output) — https://docs.claude.com/ の価格表を参照
-PRICE_TABLE = {
+PRICE_TABLE_USD = {
     "claude-haiku-4-5-20251001": (1.0, 5.0),
     "claude-haiku-4-5": (1.0, 5.0),
     "claude-sonnet-5": (2.0, 10.0),
 }
+# 為替は概算の固定レート(厳密なリアルタイムレートは取得していない)
+USD_JPY_RATE = 150.0
 
 
 def process_commands(client: DiscordClient, channel_id: str):
@@ -63,7 +66,8 @@ def build_message(shown, suppressed_counts, muted_count, total_found):
         lines.append("該当する銘柄はありませんでした。")
 
     for s in shown:
-        lines.append(f"**{s['code']} {s['name']}** (+{s['change_pct']:.1f}%, {s['price']}円) [{s['category']}]")
+        tag_suffix = f" [{s['category']}]" if s.get("category") else ""
+        lines.append(f"**{s['code']} {s['name']}** (+{s['change_pct']:.1f}%, {s['price']}円){tag_suffix}")
         lines.append(s["reason"])
         lines.append("")
 
@@ -87,7 +91,7 @@ def main():
 
     mute_codes = set(storage.load("mute_codes.json", []))
     mute_categories = set(storage.load("mute_categories.json", []))
-    categories = commands.ensure_default_categories()
+    tags = storage.load("tags.json", {})
 
     # 2. 値上がり率ランキングを取得
     surges = yahoo_stocks.get_surge_list(THRESHOLD_PCT)
@@ -104,47 +108,47 @@ def main():
     shown = []
     suppressed_counts = {}
 
-    # 4. 各銘柄について材料を集めて判定
+    # 4. 各銘柄について材料を集め、理由を要約する(カテゴリはtagsからのみ取得)
     for s in surges:
         code, name, pct = s["code"], s["name"], s["change_pct"]
         news = yahoo_stocks.get_stock_news(code)
         bbs_posts = research.get_yahoo_bbs(code)
         x_posts = research.get_x_buzz(name)
 
-        reason, category = None, None
+        reason = None
         if have_key and claude_calls < MAX_CLAUDE_CALLS:
             try:
-                reason, category, usage = research.classify(
-                    code, name, pct, news, bbs_posts, x_posts, categories, model=CLAUDE_MODEL
+                reason, usage = research.summarize_reason(
+                    code, name, pct, news, bbs_posts, x_posts, model=CLAUDE_MODEL
                 )
                 claude_calls += 1
                 total_usage["input_tokens"] += usage["input_tokens"]
                 total_usage["output_tokens"] += usage["output_tokens"]
             except Exception as e:
-                print(f"[main] Claude classify failed for {code}: {e}")
+                print(f"[main] Claude summarize failed for {code}: {e}")
 
-        if reason is None:
+        if not reason:
             reason = research.fallback_reason(news)
-            category = list(categories.keys())[-1] if categories else "その他"
 
         s["reason"] = reason
-        s["category"] = category
+        s["category"] = tags.get(code)
 
-        # 5. カテゴリがミュートされていればまとめてカウント、そうでなければ詳細表示
-        if category in mute_categories:
-            suppressed_counts[category] = suppressed_counts.get(category, 0) + 1
+        # 5. 手動タグのカテゴリがミュートされていればまとめてカウント、そうでなければ詳細表示
+        if s["category"] and s["category"] in mute_categories:
+            suppressed_counts[s["category"]] = suppressed_counts.get(s["category"], 0) + 1
         else:
             shown.append(s)
 
     text = build_message(shown, suppressed_counts, muted_count, total_found)
 
     if claude_calls:
-        price_in, price_out = PRICE_TABLE.get(CLAUDE_MODEL, (0.0, 0.0))
-        cost = (
+        price_in, price_out = PRICE_TABLE_USD.get(CLAUDE_MODEL, (0.0, 0.0))
+        cost_usd = (
             total_usage["input_tokens"] / 1_000_000 * price_in
             + total_usage["output_tokens"] / 1_000_000 * price_out
         )
-        text += f"\n\n💰 本日のClaude判定コスト: 約${cost:.4f} ({CLAUDE_MODEL}, {claude_calls}件判定)"
+        cost_jpy = cost_usd * USD_JPY_RATE
+        text += f"\n\n💰 本日のClaude判定コスト: 約{cost_jpy:.1f}円 ({CLAUDE_MODEL}, {claude_calls}件判定)"
 
     print(text)
     if not dry_run:

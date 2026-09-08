@@ -7,11 +7,15 @@
   !unmute <証券コード>            … ミュート解除
   !muted                         … 現在のミュート設定(銘柄・カテゴリ)を表示
 
-  !addcat <カテゴリ名> [説明]     … カテゴリを追加/更新(自分で好きな名前を作れる)
-  !delcat <カテゴリ名>            … カテゴリを削除
-  !categories                    … 現在のカテゴリ一覧(説明つき)を表示
+  !tag <証券コード> <カテゴリ名>   … 銘柄にカテゴリを手動で付与する
+  !untag <証券コード>             … タグを削除
+  !tags                          … 現在のタグ付け一覧を表示
   !mutecat <カテゴリ名>           … そのカテゴリの銘柄をまとめて非表示にする(「◯◯ N件」表示)
   !unmutecat <カテゴリ名>         … カテゴリのミュート解除
+
+カテゴリ(「クソ株」等)はAIが自動判定するのではなく、ここでユーザーが手動で
+付与したタグに基づく。掲示板・SNSの断片情報からの自動判定は誤判定
+(ハルシネーション)のリスクがあるため採用していない。
 
 反映は次回の実行(1日1回)からになる。
 """
@@ -19,27 +23,13 @@ from __future__ import annotations
 
 import storage
 
-DEFAULT_CATEGORIES = {
-    "決算・業績": "決算発表・業績修正・配当修正などが材料",
-    "材料": "新製品・業務提携・M&A・新規契約など具体的な好材料",
-    "バイオ株": "医薬品・バイオテクノロジー関連銘柄",
-    "クソ株": "具体的な材料が見当たらず、出来高だけ膨らむ投機的・思惑先行の急騰",
-    "市況・全体": "個別材料ではなく地合い・指数全体の動きに連動した上昇",
-    "その他": "上記のどれにも当てはまらない、または理由が特定できない",
-}
-
-
-def ensure_default_categories():
-    cats = storage.load("categories.json", None)
-    if cats is None:
-        storage.save("categories.json", DEFAULT_CATEGORIES)
-        return dict(DEFAULT_CATEGORIES)
-    return cats
-
 
 def _help_text() -> str:
-    cats = ensure_default_categories()
-    cat_list = "\n".join(f"  ・{name} — {desc}" for name, desc in cats.items())
+    tags = storage.load("tags.json", {})
+    if tags:
+        tag_list = "\n".join(f"  ・{code} → {cat}" for code, cat in sorted(tags.items()))
+    else:
+        tag_list = "  (なし)"
     return f"""**📈 株価急騰ウォッチ コマンド一覧**
 (このチャンネルに打ち込んでください。反映は次回の実行(1日1回)からになります)
 
@@ -50,24 +40,24 @@ def _help_text() -> str:
 `!muted`
   現在のミュート設定(銘柄・カテゴリ)を表示します
 
-`!addcat <カテゴリ名> [説明]`
-  カテゴリを追加/更新します。説明は判定の参考に使われます
-  (例: `!addcat 仕手筋 出来高が急増し値動きが荒い銘柄`)
-`!delcat <カテゴリ名>`
-  カテゴリを削除します
-`!categories`
-  現在のカテゴリ一覧を表示します
+`!tag <証券コード> <カテゴリ名>`
+  銘柄にカテゴリを手動で付与します(例: `!tag 8995 クソ株`)
+  カテゴリはAIが自動判定するのではなく、ここで付けたタグのみが使われます
+`!untag <証券コード>`
+  タグを削除します
+`!tags`
+  現在のタグ付け一覧を表示します
 `!mutecat <カテゴリ名>`
-  そのカテゴリの銘柄を詳細表示せず「カテゴリ名 N件」のようにまとめます
-  (例: `!mutecat クソ株`)
+  そのカテゴリが付いた銘柄を詳細表示せず「カテゴリ名 N件」のようにまとめます
+  (例: `!mutecat クソ株`。タグが付いていない銘柄はまとめられず常に詳細表示されます)
 `!unmutecat <カテゴリ名>`
   カテゴリのミュートを解除します
 
 `!help`
   この一覧を表示します
 
-**現在のカテゴリ**
-{cat_list}
+**現在のタグ付け**
+{tag_list}
 """
 
 
@@ -88,12 +78,12 @@ def handle_command(content: str) -> str | None:
         return _cmd_unmute(arg)
     if cmd == "muted":
         return _cmd_muted()
-    if cmd == "addcat":
-        return _cmd_addcat(arg)
-    if cmd == "delcat":
-        return _cmd_delcat(arg)
-    if cmd == "categories":
-        return _cmd_categories()
+    if cmd == "tag":
+        return _cmd_tag(arg)
+    if cmd == "untag":
+        return _cmd_untag(arg)
+    if cmd == "tags":
+        return _cmd_tags()
     if cmd == "mutecat":
         return _cmd_mutecat(arg)
     if cmd == "unmutecat":
@@ -133,54 +123,45 @@ def _cmd_muted() -> str:
     return "\n".join(lines)
 
 
-def _cmd_addcat(arg: str) -> str:
-    if not arg:
-        return "使い方: `!addcat カテゴリ名 [説明]`\n例: `!addcat 仕手筋 出来高が急増し値動きが荒い銘柄`"
+def _cmd_tag(arg: str) -> str:
     bits = arg.split(maxsplit=1)
-    name = bits[0]
-    desc = bits[1] if len(bits) > 1 else "(説明なし。名前から判断)"
-    cats = ensure_default_categories()
-    is_update = name in cats
-    cats[name] = desc
-    storage.save("categories.json", cats)
-    verb = "更新" if is_update else "追加"
-    return f"✅ カテゴリを{verb}しました: **{name}** — {desc}"
+    if len(bits) < 2:
+        return "使い方: `!tag 証券コード カテゴリ名`\n例: `!tag 8995 クソ株`"
+    code, cat = bits[0].strip().upper(), bits[1].strip()
+    tags = storage.load("tags.json", {})
+    is_update = code in tags
+    tags[code] = cat
+    storage.save("tags.json", tags)
+    verb = "更新" if is_update else "登録"
+    return f"✅ タグを{verb}しました: {code} → **{cat}**"
 
 
-def _cmd_delcat(arg: str) -> str:
-    name = arg.strip()
-    if not name:
-        return "使い方: `!delcat カテゴリ名`"
-    cats = ensure_default_categories()
-    if name not in cats:
-        return f"そのカテゴリはありません: {name}"
-    del cats[name]
-    storage.save("categories.json", cats)
-    # ミュート設定にも入っていれば一緒に外す
-    mute_cats = storage.load("mute_categories.json", [])
-    if name in mute_cats:
-        mute_cats.remove(name)
-        storage.save("mute_categories.json", mute_cats)
-    return f"🗑️ カテゴリを削除しました: {name}"
+def _cmd_untag(arg: str) -> str:
+    code = arg.strip().upper()
+    if not code:
+        return "使い方: `!untag 8995`"
+    tags = storage.load("tags.json", {})
+    if code not in tags:
+        return f"タグが付いていません: {code}"
+    del tags[code]
+    storage.save("tags.json", tags)
+    return f"🗑️ タグを削除しました: {code}"
 
 
-def _cmd_categories() -> str:
-    cats = ensure_default_categories()
-    if not cats:
-        return "現在、カテゴリは登録されていません。`!addcat` で追加できます。"
-    lines = ["**現在のカテゴリ一覧**"]
-    for name, desc in cats.items():
-        lines.append(f"・{name} — {desc}")
+def _cmd_tags() -> str:
+    tags = storage.load("tags.json", {})
+    if not tags:
+        return "現在、タグ付けされている銘柄はありません。`!tag` で登録できます。"
+    lines = ["**現在のタグ付け一覧**"]
+    for code, cat in sorted(tags.items()):
+        lines.append(f"・{code} → {cat}")
     return "\n".join(lines)
 
 
 def _cmd_mutecat(arg: str) -> str:
     name = arg.strip()
     if not name:
-        return "使い方: `!mutecat クソ株`\n`!categories` で現在のカテゴリ一覧を見られます。"
-    cats = ensure_default_categories()
-    if name not in cats:
-        return f"そのカテゴリは登録されていません: {name}\n先に `!addcat {name} 説明` で作成してください。"
+        return "使い方: `!mutecat クソ株`\n`!tags` で現在のタグ付け一覧を見られます。"
     mute_cats = storage.load("mute_categories.json", [])
     if name in mute_cats:
         return f"すでにミュート済みのカテゴリです: {name}"

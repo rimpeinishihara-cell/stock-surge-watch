@@ -1,7 +1,13 @@
 """
 Yahoo!ファイナンス掲示板・X(Yahoo!リアルタイム検索経由)から材料を集め、
-Claude APIで急騰理由の要約とカテゴリ分類を行う。ニュース見出しは yahoo_stocks.py
+Claude APIで急騰理由の要約を行う。ニュース見出しは yahoo_stocks.py
 (Yahoo!ファイナンスのニュースタブ)から渡される。
+
+カテゴリ分類(クソ株・バイオ株など)はAIに判定させない。掲示板・SNSの断片的な
+情報から推測するため誤判定(ハルシネーション)のリスクがあり、銘柄への評価に
+関わる判定を自動化すべきではないため、ユーザーが `!tag` コマンドで手動で
+付与する方式にしている(commands.py参照)。要約自体にも誤りが含まれうるため、
+投稿には毎回「AIによる自動要約」である旨の注記を付けている(main.py参照)。
 
 - Yahoo!ファイナンス掲示板(/forum)は静的HTMLに投稿本文が含まれることを確認済み。
 - Xは公式APIが従量課金制のため、wom-buzz-watch と同じく
@@ -78,11 +84,10 @@ def fallback_reason(news):
     return "(材料未判定) 関連ニュースなし"
 
 
-def _build_prompt(code, name, pct, news, bbs_posts, x_posts, categories):
+def _build_prompt(code, name, pct, news, bbs_posts, x_posts):
     news_text = "\n".join(f"- ({n['datetime'][:10]}) {n['title']}" for n in news) or "(なし)"
     bbs_text = "\n".join(f"- {p}" for p in bbs_posts) or "(なし)"
     x_text = "\n".join(f"- {p}" for p in x_posts) or "(なし)"
-    cat_text = "\n".join(f"- {n}: {d}" for n, d in categories.items())
     return f"""以下は本日 +{pct:.1f}% 上昇した銘柄「{name}({code})」に関する情報です。
 
 # Yahoo!ファイナンスニュース(この銘柄の最近のニュース見出し)
@@ -94,61 +99,33 @@ def _build_prompt(code, name, pct, news, bbs_posts, x_posts, categories):
 # X(旧Twitter)の関連投稿(Yahoo!リアルタイム検索経由)
 {x_text}
 
-# 選択可能なカテゴリ
-{cat_text}
-
 上記の情報から、この銘柄が本日値上がりした理由を1〜2文で日本語要約してください。
-情報が乏しく理由が特定できない場合は、その旨を明記してください。
-カテゴリは上記の一覧から最もふさわしいものを1つだけ選んでください。
+複数銘柄をまとめた市況記事や無関係な投稿を、この銘柄固有の理由と誤って結び付けない
+でください。情報が乏しく理由が特定できない場合は、推測せずにその旨を明記してください。
+要約以外の文章(前置き・結び等)は不要です。
 """
 
 
-def classify(code, name, pct, news, bbs_posts, x_posts, categories, model=None):
+def summarize_reason(code, name, pct, news, bbs_posts, x_posts, model=None):
     """
-    Claude APIで理由要約とカテゴリ分類を行う。
-    戻り値: (reason: str, category: str, usage: {"input_tokens", "output_tokens"})
+    Claude APIで急騰理由の要約のみを行う(カテゴリ分類はしない)。
+    戻り値: (reason: str, usage: {"input_tokens", "output_tokens"})
     """
     import anthropic
 
     model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
     client = anthropic.Anthropic()
 
-    cat_names = list(categories.keys()) or ["その他"]
-    tool_schema = {
-        "name": "classify_surge",
-        "description": "値上がり銘柄の急騰理由を要約し、指定されたカテゴリから1つ選ぶ。",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "急騰理由の要約(日本語1〜2文)。",
-                },
-                "category": {
-                    "type": "string",
-                    "enum": cat_names,
-                    "description": "与えられたカテゴリ一覧から最も当てはまるものを1つ選ぶ。",
-                },
-            },
-            "required": ["reason", "category"],
-        },
-    }
-
-    prompt = _build_prompt(code, name, pct, news, bbs_posts, x_posts, categories)
+    prompt = _build_prompt(code, name, pct, news, bbs_posts, x_posts)
     resp = client.messages.create(
         model=model,
-        max_tokens=512,
-        tools=[tool_schema],
-        tool_choice={"type": "tool", "name": "classify_surge"},
+        max_tokens=300,
         messages=[{"role": "user", "content": prompt}],
     )
     usage = {
         "input_tokens": resp.usage.input_tokens,
         "output_tokens": resp.usage.output_tokens,
     }
-    for block in resp.content:
-        if block.type == "tool_use":
-            reason = block.input.get("reason", "")
-            category = block.input.get("category", cat_names[-1])
-            return reason, category, usage
-    return "", cat_names[-1], usage
+    text_blocks = [b.text for b in resp.content if b.type == "text"]
+    reason = "".join(text_blocks).strip()
+    return reason, usage
