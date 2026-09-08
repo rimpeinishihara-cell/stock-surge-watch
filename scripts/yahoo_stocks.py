@@ -1,10 +1,16 @@
 """
-Yahoo!ファイナンスから「日本株ランキング（値上がり率）」と、個別銘柄のニュース見出しを取得する。
+Yahoo!ファイナンスから「日本株ランキング（値上がり率）」、個別銘柄のニュース見出し、
+そして株探(kabutan)発の「本日のランキング【値上がり率】」記事(銘柄ごとの短評付き)を取得する。
 
-当初は株探(kabutan.jp)を使う予定だったが、kabutan.jpはAWS WAFのHuman Verification
-(CAPTCHA)がGitHub ActionsのIPを含むデータセンター系IPを一律ブロックしており、
-自動化からは一切アクセスできないことを確認した(CAPTCHAの回避は行わないため、
-kabutan.jpの利用は断念した)。Yahoo!ファイナンスは同種のブロックがないことを確認済み。
+当初は株探(kabutan.jp)に直接アクセスする予定だったが、kabutan.jpはAWS WAFの
+Human Verification(CAPTCHA)がGitHub ActionsのIPを含むデータセンター系IPを
+一律ブロックしており、自動化からは一切アクセスできないことを確認した(CAPTCHAの
+回避は行わないため、kabutan.jpへの直接アクセスは断念した)。
+その代わり、Yahoo!ファイナンスの個別銘柄ニュース(/quote/XXXX.T/news)には
+「株探ニュース」を出典とする記事がそのまま配信されており、その中の
+「本日のランキング【値上がり率】」という記事には、値上がり率上位銘柄それぞれに
+対する株探の短いコメント(個別ニュース／決算速報／テーマ)が付いていることを確認した。
+これをそのまま抜粋して使うことで、AIの推測を挟まずに株探由来のコメントを提示できる。
 
 ページはNext.jsアプリだが、ランキング・ニュース一覧とも静的HTMLに内容がそのまま
 含まれる(SSR)ことを確認済み。CSSクラス名にはビルドごとに変わりうるハッシュ接尾辞が
@@ -24,6 +30,8 @@ USER_AGENT = (
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "ja,en;q=0.9"}
 
 RANKING_URL = "https://finance.yahoo.co.jp/stocks/ranking/up"
+BASE_URL = "https://finance.yahoo.co.jp"
+KABUTAN_RANKING_TITLE_PREFIX = "本日のランキング【値上がり率】"
 
 
 def _class_prefix(tag, prefix):
@@ -67,6 +75,7 @@ def get_surge_list(threshold_pct: float = 10.0, max_pages: int = 25):
 
             name_link = name_cell.find("a")
             name = name_link.get_text(strip=True) if name_link else ""
+            name = name.replace("(株)", "").strip()
             supplements = [li.get_text(strip=True) for li in name_cell.select("li")]
             code = supplements[0] if supplements else None
             market = supplements[1] if len(supplements) > 1 else ""
@@ -103,9 +112,9 @@ def get_surge_list(threshold_pct: float = 10.0, max_pages: int = 25):
     return results
 
 
-def get_stock_news(code: str, max_items: int = 6):
-    """個別銘柄のニュース見出し(日時・タイトル)を新しい順に取得する。"""
-    url = f"https://finance.yahoo.co.jp/quote/{code}.T/news"
+def get_stock_news(code: str, max_items: int = 10):
+    """個別銘柄のニュース見出し(日時・タイトル・出典・詳細URL)を新しい順に取得する。"""
+    url = f"{BASE_URL}/quote/{code}.T/news"
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
     except requests.RequestException as e:
@@ -117,20 +126,81 @@ def get_stock_news(code: str, max_items: int = 6):
     soup = BeautifulSoup(resp.text, "html.parser")
     items = []
     for art in soup.select("article"):
-        text = art.get_text("\n", strip=True)
-        if not text:
+        link = art.find("a")
+        title_el = art.find("h3")
+        if not link or not title_el:
             continue
-        lines = [l for l in text.split("\n") if l.strip()]
-        if not lines:
-            continue
-        # 先頭行がタイトル、末尾付近に時刻(HH:MM)があることが多い
-        title = lines[0]
-        time_match = None
-        for l in lines[1:4]:
-            if re.match(r"^\d{1,2}:\d{2}$", l.strip()):
-                time_match = l.strip()
-                break
-        items.append({"datetime": time_match or "", "title": title})
+        title = title_el.get_text(strip=True)
+        time_el = art.find("time")
+        datetime_text = time_el.get_text(strip=True) if time_el else ""
+        media_lis = [li for li in art.select("li") if _class_prefix(li, "_NewsItem__supplement--media")]
+        media = media_lis[0].get_text(strip=True) if media_lis else ""
+        href = link.get("href") or ""
+        items.append({
+            "datetime": datetime_text,
+            "title": title,
+            "media": media,
+            "url": (BASE_URL + href) if href.startswith("/") else href,
+        })
         if len(items) >= max_items:
             break
     return items
+
+
+def _parse_kabutan_ranking_article(text: str) -> dict:
+    """
+    株探の「本日のランキング【値上がり率】」記事本文(get_textしたテキスト)から、
+    銘柄コードごとの個別コメントを抽出する。コメントが無い銘柄は空文字列。
+    「よく比較される銘柄」など、ランキング表以降のセクションは対象外にする。
+    """
+    cutoff = text.find("よく比較される銘柄")
+    if cutoff != -1:
+        text = text[:cutoff]
+
+    lines = text.split("\n")
+    comments = {}
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == "<" and i + 2 < len(lines) and lines[i + 2].strip() == ">":
+            code = lines[i + 1].strip()
+            info_line = lines[i + 3] if i + 3 < len(lines) else ""
+            m = re.match(
+                r"^\S+[\s　]+\S+[\s　]+[\d.]+[\s　]+\d+[\s　]*(?:S[\s　]*)?(.*)$",
+                info_line.strip(),
+            )
+            comments[code] = m.group(1).strip() if m else ""
+            i += 4
+        else:
+            i += 1
+    return comments
+
+
+def fetch_kabutan_ranking_comments(sample_codes) -> dict:
+    """
+    今日の値上がり銘柄のうち何件かのニュース一覧から、株探の
+    「本日のランキング【値上がり率】」記事(全銘柄で共通)を見つけて取得し、
+    {証券コード: コメント} の辞書を返す。見つからなければ空dict。
+    """
+    for code in sample_codes:
+        news = get_stock_news(code, max_items=15)
+        article = next(
+            (n for n in news if n["media"] == "株探ニュース"
+             and n["title"].startswith(KABUTAN_RANKING_TITLE_PREFIX)),
+            None,
+        )
+        if not article:
+            continue
+        try:
+            resp = requests.get(article["url"], headers=HEADERS, timeout=20)
+        except requests.RequestException as e:
+            print(f"[yahoo_stocks] ERROR kabutan ranking article: {e}")
+            continue
+        if resp.status_code != 200:
+            continue
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+        art = soup.find("article")
+        if not art:
+            continue
+        return _parse_kabutan_ranking_article(art.get_text("\n", strip=True))
+    return {}

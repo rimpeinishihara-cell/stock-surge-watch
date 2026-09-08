@@ -6,11 +6,13 @@ GitHub Actions から毎日実行されるメイン処理。
      !mute / !tag などのコマンドを実行して返信
   2. Yahoo!ファイナンスの値上がり率ランキングから、+10%(既定)以上の銘柄を取得
   3. ミュート銘柄を除外
-  4. 各銘柄について、Yahoo!ファイナンスのニュース・掲示板・X(Yahoo!リアルタイム検索)から
+  4. 株探(kabutan)発の「本日のランキング【値上がり率】」記事(Yahoo!ファイナンス
+     ニュース経由)から、銘柄ごとの短評をそのまま抜粋する(AIには推測させない)
+  5. 各銘柄について、Yahoo!ファイナンスのニュース・掲示板・X(Yahoo!リアルタイム検索)から
      材料を集め、Claude APIで急騰理由の要約を行う(カテゴリ分類はAIにはさせない。
      `!tag` で手動登録されたカテゴリのみを使う)
-  5. ミュートされたカテゴリ(手動タグ)の銘柄は「カテゴリ名 N件」とまとめ、詳細は表示しない
-  6. Discordに投稿する
+  6. ミュートされたカテゴリ(手動タグ)の銘柄は「カテゴリ名 N件」とまとめ、詳細は表示しない
+  7. Discordに投稿する
 """
 import os
 from datetime import datetime
@@ -67,8 +69,11 @@ def build_message(shown, suppressed_counts, muted_count, total_found):
 
     for s in shown:
         tag_suffix = f" [{s['category']}]" if s.get("category") else ""
-        lines.append(f"**{s['code']} {s['name']}** (+{s['change_pct']:.1f}%, {s['price']}円){tag_suffix}")
+        lines.append(
+            f"**{s['code']} {s['name']}**  **+{s['change_pct']:.1f}%**  ({s['price']}円){tag_suffix}"
+        )
         lines.append(s["reason"])
+        lines.append(f"📰 株探コメント: {s['kabutan_comment']}")
         lines.append("")
 
     if suppressed_counts:
@@ -101,6 +106,11 @@ def main():
     surges = [s for s in surges if s["code"] not in mute_codes]
     muted_count = total_found - len(surges)
 
+    # 4. 株探「本日のランキング」記事の個別コメントをまとめて取得(全銘柄で共通の1記事)
+    kabutan_comments = yahoo_stocks.fetch_kabutan_ranking_comments(
+        [s["code"] for s in surges[:5]]
+    )
+
     have_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     claude_calls = 0
     total_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -108,7 +118,7 @@ def main():
     shown = []
     suppressed_counts = {}
 
-    # 4. 各銘柄について材料を集め、理由を要約する(カテゴリはtagsからのみ取得)
+    # 5. 各銘柄について材料を集め、理由を要約する(カテゴリはtagsからのみ取得)
     for s in surges:
         code, name, pct = s["code"], s["name"], s["change_pct"]
         news = yahoo_stocks.get_stock_news(code)
@@ -132,8 +142,9 @@ def main():
 
         s["reason"] = reason
         s["category"] = tags.get(code)
+        s["kabutan_comment"] = kabutan_comments.get(code) or "記載なし"
 
-        # 5. 手動タグのカテゴリがミュートされていればまとめてカウント、そうでなければ詳細表示
+        # 6. 手動タグのカテゴリがミュートされていればまとめてカウント、そうでなければ詳細表示
         if s["category"] and s["category"] in mute_categories:
             suppressed_counts[s["category"]] = suppressed_counts.get(s["category"], 0) + 1
         else:
