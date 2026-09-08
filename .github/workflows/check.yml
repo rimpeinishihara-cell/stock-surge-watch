@@ -1,0 +1,57 @@
+name: Stock Surge Watch
+
+# GitHub Actions の schedule トリガーは実行が不安定(遅延・スキップ)なため、
+# 外部の cron-job.org から workflow_dispatch を毎日呼び出す運用にしている。
+# (README参照)
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Discordに送らずログのみ出力する"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: stock-surge-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run check
+        env:
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL }}
+          MAX_CLAUDE_CALLS_PER_RUN: ${{ vars.MAX_CLAUDE_CALLS_PER_RUN }}
+          SURGE_THRESHOLD_PCT: ${{ vars.SURGE_THRESHOLD_PCT }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: python scripts/main.py
+
+      - name: Commit updated state
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update state [skip ci]"
+            git push
+          else
+            echo "No state change"
+          fi
