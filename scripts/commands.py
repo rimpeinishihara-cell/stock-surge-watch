@@ -7,8 +7,8 @@
   !unmute <証券コード>            … ミュート解除
   !muted                         … 現在のミュート設定(銘柄・カテゴリ)を表示
 
-  !tag <証券コード> <カテゴリ名>   … 銘柄にカテゴリを手動で付与する
-  !untag <証券コード>             … タグを削除
+  !tag <証券コード...> <カテゴリ名> … 銘柄(複数可)にカテゴリを手動で付与する
+  !untag <証券コード...>          … タグを削除(複数可)
   !tags                          … 現在のタグ付け一覧を表示
   !mutecat <カテゴリ名>           … そのカテゴリの銘柄をまとめて非表示にする(「◯◯ N件」表示)
   !unmutecat <カテゴリ名>         … カテゴリのミュート解除
@@ -40,11 +40,13 @@ def _help_text() -> str:
 `!muted`
   現在のミュート設定(銘柄・カテゴリ)を表示します
 
-`!tag <証券コード> <カテゴリ名>`
-  銘柄にカテゴリを手動で付与します(例: `!tag 8995 クソ株`)
+`!tag <証券コード...> <カテゴリ名>`
+  銘柄にカテゴリを手動で付与します。複数銘柄をまとめて指定できます
+  (例: `!tag 8995 クソ株` / `!tag 8995 6203 4594 クソ株`)
+  末尾の1語がカテゴリ名、それ以外は全て証券コードとして扱われます
   カテゴリはAIが自動判定するのではなく、ここで付けたタグのみが使われます
-`!untag <証券コード>`
-  タグを削除します
+`!untag <証券コード...>`
+  タグを削除します(複数可、例: `!untag 8995 6203`)
 `!tags`
   現在のタグ付け一覧を表示します
 `!mutecat <カテゴリ名>`
@@ -124,28 +126,50 @@ def _cmd_muted() -> str:
 
 
 def _cmd_tag(arg: str) -> str:
-    bits = arg.split(maxsplit=1)
+    bits = arg.split()
     if len(bits) < 2:
-        return "使い方: `!tag 証券コード カテゴリ名`\n例: `!tag 8995 クソ株`"
-    code, cat = bits[0].strip().upper(), bits[1].strip()
+        return (
+            "使い方: `!tag 証券コード [証券コード...] カテゴリ名`\n"
+            "例: `!tag 8995 クソ株` / `!tag 8995 6203 4594 クソ株`\n"
+            "(末尾の1語がカテゴリ名、それ以外は全て証券コードとして扱われます)"
+        )
+    *codes, cat = bits
+    codes = [c.upper() for c in codes]
     tags = storage.load("tags.json", {})
-    is_update = code in tags
-    tags[code] = cat
+    added, updated = [], []
+    for code in codes:
+        (updated if code in tags else added).append(code)
+        tags[code] = cat
     storage.save("tags.json", tags)
-    verb = "更新" if is_update else "登録"
-    return f"✅ タグを{verb}しました: {code} → **{cat}**"
+
+    lines = [f"✅ タグを設定しました: **{cat}**"]
+    if added:
+        lines.append("新規: " + ", ".join(added))
+    if updated:
+        lines.append("更新: " + ", ".join(updated))
+    return "\n".join(lines)
 
 
 def _cmd_untag(arg: str) -> str:
-    code = arg.strip().upper()
-    if not code:
-        return "使い方: `!untag 8995`"
+    codes = [c.upper() for c in arg.split()]
+    if not codes:
+        return "使い方: `!untag 8995` / `!untag 8995 6203`"
     tags = storage.load("tags.json", {})
-    if code not in tags:
-        return f"タグが付いていません: {code}"
-    del tags[code]
+    removed, missing = [], []
+    for code in codes:
+        if code in tags:
+            del tags[code]
+            removed.append(code)
+        else:
+            missing.append(code)
     storage.save("tags.json", tags)
-    return f"🗑️ タグを削除しました: {code}"
+
+    lines = []
+    if removed:
+        lines.append("🗑️ タグを削除しました: " + ", ".join(removed))
+    if missing:
+        lines.append("タグが付いていません: " + ", ".join(missing))
+    return "\n".join(lines)
 
 
 def _cmd_tags() -> str:
