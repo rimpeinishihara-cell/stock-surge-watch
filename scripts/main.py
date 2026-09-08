@@ -23,9 +23,9 @@ from discord_client import DiscordClient
 
 JST = ZoneInfo("Asia/Tokyo")
 
-THRESHOLD_PCT = float(os.environ.get("SURGE_THRESHOLD_PCT", "10"))
-MAX_CLAUDE_CALLS = int(os.environ.get("MAX_CLAUDE_CALLS_PER_RUN", "40"))
-CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL", research.DEFAULT_MODEL)
+THRESHOLD_PCT = float(os.environ.get("SURGE_THRESHOLD_PCT") or "10")
+MAX_CLAUDE_CALLS = int(os.environ.get("MAX_CLAUDE_CALLS_PER_RUN") or "40")
+CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL") or research.DEFAULT_MODEL
 
 # $ / 1M tokens (input, output) — https://docs.claude.com/ の価格表を参照
 PRICE_TABLE = {

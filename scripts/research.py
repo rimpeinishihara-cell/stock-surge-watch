@@ -109,7 +109,7 @@ def classify(code, name, pct, news, bbs_posts, x_posts, categories, model=None):
     """
     import anthropic
 
-    model = model or os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL)
+    model = model or os.environ.get("ANTHROPIC_MODEL") or DEFAULT_MODEL
     client = anthropic.Anthropic()
 
     cat_names = list(categories.keys()) or ["その他"]
