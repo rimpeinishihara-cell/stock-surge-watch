@@ -16,9 +16,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import commands
-import kabutan
 import research
 import storage
+import yahoo_stocks
 from discord_client import DiscordClient
 
 JST = ZoneInfo("Asia/Tokyo")
@@ -90,7 +90,7 @@ def main():
     categories = commands.ensure_default_categories()
 
     # 2. 値上がり率ランキングを取得
-    surges = kabutan.get_surge_list(THRESHOLD_PCT)
+    surges = yahoo_stocks.get_surge_list(THRESHOLD_PCT)
     total_found = len(surges)
 
     # 3. ミュート銘柄を除外
@@ -107,7 +107,7 @@ def main():
     # 4. 各銘柄について材料を集めて判定
     for s in surges:
         code, name, pct = s["code"], s["name"], s["change_pct"]
-        news = kabutan.get_stock_news(code)
+        news = yahoo_stocks.get_stock_news(code)
         bbs_posts = research.get_yahoo_bbs(code)
         x_posts = research.get_x_buzz(name)
 

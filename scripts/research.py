@@ -1,6 +1,7 @@
 """
 Yahoo!ファイナンス掲示板・X(Yahoo!リアルタイム検索経由)から材料を集め、
-Claude APIで急騰理由の要約とカテゴリ分類を行う。
+Claude APIで急騰理由の要約とカテゴリ分類を行う。ニュース見出しは yahoo_stocks.py
+(Yahoo!ファイナンスのニュースタブ)から渡される。
 
 - Yahoo!ファイナンス掲示板(/forum)は静的HTMLに投稿本文が含まれることを確認済み。
 - Xは公式APIが従量課金制のため、wom-buzz-watch と同じく
@@ -84,7 +85,7 @@ def _build_prompt(code, name, pct, news, bbs_posts, x_posts, categories):
     cat_text = "\n".join(f"- {n}: {d}" for n, d in categories.items())
     return f"""以下は本日 +{pct:.1f}% 上昇した銘柄「{name}({code})」に関する情報です。
 
-# かぶたんニュース(この銘柄の最近のニュース見出し)
+# Yahoo!ファイナンスニュース(この銘柄の最近のニュース見出し)
 {news_text}
 
 # Yahoo!ファイナンス掲示板の直近の投稿
