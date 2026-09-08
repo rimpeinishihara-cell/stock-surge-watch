@@ -121,8 +121,19 @@ def main():
     suppressed_counts = {}
 
     # 5. 各銘柄について前営業日15:30以降の掲示板投稿を集め、声をまとめる
+    #    (カテゴリがミュートされている銘柄は、掲示板取得もClaude呼び出しも行わず
+    #    スキップする。「クソ株」のようなカテゴリはまさに詳細を見たくない銘柄
+    #    であることが多く、無駄なトークン消費を避けるため)
     for s in surges:
         code, name, pct = s["code"], s["name"], s["change_pct"]
+        category = tags.get(code)
+        s["category"] = category
+        s["kabutan_comment"] = kabutan_comments.get(code) or "記載なし"
+
+        if category and category in mute_categories:
+            suppressed_counts[category] = suppressed_counts.get(category, 0) + 1
+            continue
+
         bbs_posts = research.get_yahoo_bbs(code, bbs_cutoff)
 
         bbs_summary = None
@@ -141,14 +152,7 @@ def main():
             bbs_summary = research.fallback_bbs_summary(bbs_posts)
 
         s["bbs_summary"] = bbs_summary
-        s["category"] = tags.get(code)
-        s["kabutan_comment"] = kabutan_comments.get(code) or "記載なし"
-
-        # 6. 手動タグのカテゴリがミュートされていればまとめてカウント、そうでなければ詳細表示
-        if s["category"] and s["category"] in mute_categories:
-            suppressed_counts[s["category"]] = suppressed_counts.get(s["category"], 0) + 1
-        else:
-            shown.append(s)
+        shown.append(s)
 
     text = build_message(shown, suppressed_counts, muted_count, total_found)
 

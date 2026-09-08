@@ -114,6 +114,8 @@ python scripts/main.py --dry-run  # 環境変数を設定した上でローカ�
 Haikuモデル使用時、1銘柄あたり数千トークン程度。値上がり銘柄が1日数十件の日でも
 月間で数百円程度の見込み(`MAX_CLAUDE_CALLS_PER_RUN` で上限を調整可能)。
 投稿には毎回そのAPI利用コストを円換算(概算固定レート)で表示している。
+`!mute` された銘柄、および `!mutecat` でミュートされたカテゴリのタグが付いた
+銘柄は、掲示板取得・Claude呼び出しともスキップされるため無駄なコストがかからない。
 実際の請求は [Anthropic Console](https://console.anthropic.com/settings/limits) で確認すること。
 
 ## 既知の制限
