@@ -42,7 +42,7 @@ def get_surge_list(threshold_pct: float = 10.0, max_pages: int = 20):
             print(f"[kabutan] ERROR page={page}: {e}")
             break
         if resp.status_code != 200:
-            print(f"[kabutan] ERROR page={page} status={resp.status_code}")
+            print(f"[kabutan] ERROR page={page} status={resp.status_code} headers={dict(resp.headers)} body={resp.text[:500]!r}")
             break
         resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
