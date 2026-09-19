@@ -56,14 +56,13 @@ def process_commands(client: DiscordClient, channel_id: str):
 
 
 def mute_buttons(code: str) -> list:
-    """銘柄ごとの「1か月非表示」「一生非表示」ボタン。クリックはworker/(Cloudflare Worker)が受け取る。"""
+    """銘柄ごとの「1か月/3か月/一生 非表示」ボタン。クリックはworker/(Cloudflare Worker)が受け取る。"""
     return [{
         "type": 1,
         "components": [
-            {"type": 2, "style": 2, "label": "1か月非表示",
-             "emoji": {"name": "📅"}, "custom_id": f"mute:30:{code}"},
-            {"type": 2, "style": 4, "label": "一生非表示",
-             "emoji": {"name": "🚫"}, "custom_id": f"mute:perm:{code}"},
+            {"type": 2, "style": 2, "label": "1か月非表示", "custom_id": f"mute:30:{code}"},
+            {"type": 2, "style": 2, "label": "3か月非表示", "custom_id": f"mute:90:{code}"},
+            {"type": 2, "style": 4, "label": "一生非表示", "custom_id": f"mute:perm:{code}"},
         ],
     }]
 

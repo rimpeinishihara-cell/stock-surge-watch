@@ -1,5 +1,5 @@
 /**
- * Discordのボタン(「1か月非表示」「一生非表示」)のクリックを受け取り、
+ * Discordのボタン(「1か月非表示」「3か月非表示」「一生非表示」)のクリックを受け取り、
  * リポジトリの state/mute_codes.json を更新する Cloudflare Worker。
  *
  * Discordの「Interactions Endpoint URL」にこのWorkerのURLを設定して使う。
@@ -15,7 +15,7 @@
  *   ALLOWED_USER_IDS    … 操作を許可するDiscordユーザーID(カンマ区切り、空なら全員許可)
  */
 
-const MUTE_DAYS = 30;
+const MUTE_DAYS = { "30": 30, "90": 90 };
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -96,7 +96,7 @@ async function writeMute(env, code, expiry) {
 async function handleMute(interaction, env, mode, code) {
   let reply;
   try {
-    const expiry = mode === "perm" ? null : expiryDate(MUTE_DAYS);
+    const expiry = mode === "perm" ? null : expiryDate(MUTE_DAYS[mode]);
     await writeMute(env, code, expiry);
     reply = expiry
       ? `🔇 ${code} を ${expiry} まで非表示にしました(次回実行から反映)`
@@ -134,7 +134,7 @@ export default {
       if (allowed.length && !allowed.includes(userId)) return ephemeral("この操作を行う権限がありません。");
 
       const [action, mode, code] = (interaction.data?.custom_id || "").split(":");
-      if (action !== "mute" || !code || (mode !== "30" && mode !== "perm")) {
+      if (action !== "mute" || !code || (!(mode in MUTE_DAYS) && mode !== "perm")) {
         return ephemeral("不明な操作です。");
       }
 
