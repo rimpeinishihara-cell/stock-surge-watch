@@ -55,33 +55,50 @@ def process_commands(client: DiscordClient, channel_id: str):
     storage.save("last_message_id.json", state)
 
 
-def build_message(shown, suppressed_counts, muted_count, total_found):
+def mute_buttons(code: str) -> list:
+    """銘柄ごとの「1か月非表示」「一生非表示」ボタン。クリックはworker/(Cloudflare Worker)が受け取る。"""
+    return [{
+        "type": 1,
+        "components": [
+            {"type": 2, "style": 2, "label": "1か月非表示",
+             "emoji": {"name": "📅"}, "custom_id": f"mute:30:{code}"},
+            {"type": 2, "style": 4, "label": "一生非表示",
+             "emoji": {"name": "🚫"}, "custom_id": f"mute:perm:{code}"},
+        ],
+    }]
+
+
+def build_messages(shown, suppressed_counts, muted_count, total_found, cost_line=None):
+    """投稿するメッセージを [(本文, ボタン or None), ...] の順で返す(銘柄ごとに1メッセージ)。"""
     now_str = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
-    header = f"**📈 本日の値上がり率+{THRESHOLD_PCT:.0f}%以上 検知**（{now_str} JST時点）"
-    summary = f"検知: {total_found}件 / 表示: {len(shown)}件"
-    if muted_count:
-        summary += f" / ミュート銘柄で非表示: {muted_count}件"
-
-    lines = [header, summary, ""]
-
+    header = [
+        f"**📈 本日の値上がり率+{THRESHOLD_PCT:.0f}%以上 検知**（{now_str} JST時点）",
+        f"検知: {total_found}件 / 表示: {len(shown)}件"
+        + (f" / ミュート銘柄で非表示: {muted_count}件" if muted_count else ""),
+    ]
     if not shown and not suppressed_counts:
-        lines.append("該当する銘柄はありませんでした。")
+        header += ["", "該当する銘柄はありませんでした。"]
+    messages = [("\n".join(header), None)]
 
     for s in shown:
         tag_suffix = f" [{s['category']}]" if s.get("category") else ""
-        lines.append(
-            f"**{s['code']} {s['name']}**  **+{s['change_pct']:.1f}%**  ({s['price']}円){tag_suffix}"
-        )
-        lines.append(f"🗣️ 掲示板まとめ: {s['bbs_summary']}")
-        lines.append(f"📰 株探コメント: {s['kabutan_comment']}")
-        lines.append("")
+        lines = [
+            f"**{s['code']} {s['name']}**  **+{s['change_pct']:.1f}%**  ({s['price']}円){tag_suffix}",
+            f"🗣️ 掲示板まとめ: {s['bbs_summary']}",
+            f"📰 株探コメント: {s['kabutan_comment']}",
+        ]
+        messages.append(("\n".join(lines), mute_buttons(s["code"])))
 
+    footer = []
     if suppressed_counts:
-        lines.append("――― カテゴリ非表示 ―――")
-        for cat, cnt in suppressed_counts.items():
-            lines.append(f"{cat} {cnt}件")
+        footer.append("――― カテゴリ非表示 ―――")
+        footer += [f"{cat} {cnt}件" for cat, cnt in suppressed_counts.items()]
+    if cost_line:
+        footer += ["", cost_line] if footer else [cost_line]
+    if footer:
+        messages.append(("\n".join(footer), None))
 
-    return "\n".join(lines)
+    return messages
 
 
 def main():
@@ -154,8 +171,7 @@ def main():
         s["bbs_summary"] = bbs_summary
         shown.append(s)
 
-    text = build_message(shown, suppressed_counts, muted_count, total_found)
-
+    cost_line = None
     if claude_calls:
         price_in, price_out = PRICE_TABLE_USD.get(CLAUDE_MODEL, (0.0, 0.0))
         cost_usd = (
@@ -163,11 +179,15 @@ def main():
             + total_usage["output_tokens"] / 1_000_000 * price_out
         )
         cost_jpy = cost_usd * USD_JPY_RATE
-        text += f"\n\n💰 本日のClaude判定コスト: 約{cost_jpy:.1f}円 ({CLAUDE_MODEL}, {claude_calls}件判定)"
+        cost_line = f"💰 本日のClaude判定コスト: 約{cost_jpy:.1f}円 ({CLAUDE_MODEL}, {claude_calls}件判定)"
 
-    print(text)
-    if not dry_run:
-        client.send_message(channel_id, text)
+    for content, components in build_messages(
+        shown, suppressed_counts, muted_count, total_found, cost_line
+    ):
+        print(content)
+        print("---")
+        if not dry_run:
+            client.send_message(channel_id, content, components)
 
 
 if __name__ == "__main__":

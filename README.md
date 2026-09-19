@@ -135,3 +135,18 @@ Haikuモデル使用時、1銘柄あたり数千トークン程度。値上が�
   可能性がある(投資判断の材料にする際は参考程度にとどめること)。一方、
   「株探コメント」欄は原文をそのまま抜粋しているため、この誤りは含まれない
 - ミュート・タグの反映は次回の実行(1日1回)まで遅延する
+
+## 銘柄ごとの非表示ボタン(Cloudflare Worker)
+
+各銘柄のメッセージに「📅 1か月非表示」「🚫 一生非表示」ボタンが付きます。押すと `worker/index.js`
+(Cloudflare Worker)が Discord のクリックを受け取り、GitHub の `state/mute_codes.json` を更新します
+(次回実行から反映)。
+
+- Worker名: `stock-surge-buttons`。Discord Developer Portal の「インタラクション・エンドポイントURL」にWorkerのURLを設定
+- Worker の変数: `DISCORD_PUBLIC_KEY` `APPLICATION_ID` `GITHUB_REPO` `GITHUB_BRANCH` `ALLOWED_USER_IDS`、Secret: `GITHUB_TOKEN`
+  (このリポジトリのContentsにRead and write権限を持つfine-grained PAT・期限なし)
+- `ALLOWED_USER_IDS` に含まれるユーザーだけが操作できます
+
+## 実行スケジュール
+
+cron-job.org から平日18:00(JST)に起動(`0 18 * * 1-5`)。

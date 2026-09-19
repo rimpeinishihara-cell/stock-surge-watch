@@ -50,13 +50,17 @@ class DiscordClient:
         messages.sort(key=lambda m: int(m["id"]))
         return messages
 
-    def send_message(self, channel_id: str, content: str):
+    def send_message(self, channel_id: str, content: str, components: list | None = None):
         """
         Discordの1メッセージは2000文字までなので、長い場合は分割して送る。
+        componentsを指定した場合(ボタン等)は、分割した最後のメッセージにだけ付ける。
         """
         chunks = _split_message(content)
-        for chunk in chunks:
-            self._request("POST", f"/channels/{channel_id}/messages", json={"content": chunk})
+        for i, chunk in enumerate(chunks):
+            payload = {"content": chunk}
+            if components and i == len(chunks) - 1:
+                payload["components"] = components
+            self._request("POST", f"/channels/{channel_id}/messages", json=payload)
 
 
 def _split_message(content: str, limit: int = 1900) -> list[str]:
