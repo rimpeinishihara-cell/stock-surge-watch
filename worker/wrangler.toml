@@ -4,12 +4,12 @@ compatibility_date = "2025-01-01"
 
 [vars]
 # 公開キー・アプリIDは秘密情報ではない(Discord Developer Portalの「一般情報」に表示される)
-DISCORD_PUBLIC_KEY = "REPLACE_WITH_PUBLIC_KEY"
+DISCORD_PUBLIC_KEY = "80b1c7db58a8ac919f301fb2f229df754d2edd90cd2d1819a5ecd1a8da3c6ceb"
 APPLICATION_ID = "1546799902145646632"
 GITHUB_REPO = "rimpeinishihara-cell/stock-surge-watch"
 GITHUB_BRANCH = "master"
 # 操作を許可するDiscordユーザーID(カンマ区切り)。空なら全員許可
-ALLOWED_USER_IDS = ""
+ALLOWED_USER_IDS = "774228315082194974"
 
 # GITHUB_TOKEN は秘密情報なのでここには書かず、Cloudflareのダッシュボード
 # (Settings → Variables and Secrets)または `wrangler secret put GITHUB_TOKEN` で設定する
