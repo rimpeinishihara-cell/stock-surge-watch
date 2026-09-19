@@ -3,16 +3,14 @@ GitHub Actions から毎日実行されるメイン処理。
 
 やること:
   1. コマンド用チャンネル(通知先と同じチャンネル)の新着メッセージを読み、
-     !mute / !tag などのコマンドを実行して返信
+     !mute などのコマンドを実行して返信
   2. Yahoo!ファイナンスの値上がり率ランキングから、+10%(既定)以上の銘柄を取得
   3. ミュート銘柄を除外
   4. 株探(kabutan)発の「本日のランキング【値上がり率】」記事(Yahoo!ファイナンス
      ニュース経由)から、銘柄ごとの短評をそのまま抜粋する(AIには推測させない)
   5. 各銘柄について、前営業日15:30以降のYahoo!ファイナンス掲示板の投稿を集め、
-     Claude APIで「掲示板の声まとめ」を作る(カテゴリ分類はAIにはさせない。
-     `!tag` で手動登録されたカテゴリのみを使う)
-  6. ミュートされたカテゴリ(手動タグ)の銘柄は「カテゴリ名 N件」とまとめ、詳細は表示しない
-  7. Discordに投稿する
+     Claude APIで「掲示板の声まとめ」を作る
+  6. Discordに投稿する
 """
 import os
 from datetime import datetime
@@ -67,7 +65,7 @@ def mute_buttons(code: str) -> list:
     }]
 
 
-def build_messages(shown, suppressed_counts, muted_count, total_found, cost_line=None):
+def build_messages(shown, muted_count, total_found, cost_line=None):
     """投稿するメッセージを [(本文, ボタン or None), ...] の順で返す(銘柄ごとに1メッセージ)。"""
     now_str = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
     header = [
@@ -75,25 +73,21 @@ def build_messages(shown, suppressed_counts, muted_count, total_found, cost_line
         f"検知: {total_found}件 / 表示: {len(shown)}件"
         + (f" / ミュート銘柄で非表示: {muted_count}件" if muted_count else ""),
     ]
-    if not shown and not suppressed_counts:
+    if not shown:
         header += ["", "該当する銘柄はありませんでした。"]
     messages = [("\n".join(header), None)]
 
     for s in shown:
-        tag_suffix = f" [{s['category']}]" if s.get("category") else ""
         lines = [
-            f"**{s['code']} {s['name']}**  **+{s['change_pct']:.1f}%**  ({s['price']}円){tag_suffix}",
+            f"**{s['code']} {s['name']}**  **+{s['change_pct']:.1f}%**  ({s['price']}円)",
             f"🗣️ 掲示板まとめ: {s['bbs_summary']}",
             f"📰 株探コメント: {s['kabutan_comment']}",
         ]
         messages.append(("\n".join(lines), mute_buttons(s["code"])))
 
     footer = []
-    if suppressed_counts:
-        footer.append("――― カテゴリ非表示 ―――")
-        footer += [f"{cat} {cnt}件" for cat, cnt in suppressed_counts.items()]
     if cost_line:
-        footer += ["", cost_line] if footer else [cost_line]
+        footer.append(cost_line)
     if footer:
         messages.append(("\n".join(footer), None))
 
@@ -111,8 +105,6 @@ def main():
     process_commands(client, channel_id)
 
     mute_codes = commands.load_active_mute_codes()  # 期限切れは自動で間引かれる
-    mute_categories = set(storage.load("mute_categories.json", []))
-    tags = storage.load("tags.json", {})
 
     # 2. 値上がり率ランキングを取得
     surges = yahoo_stocks.get_surge_list(THRESHOLD_PCT)
@@ -134,21 +126,11 @@ def main():
     total_usage = {"input_tokens": 0, "output_tokens": 0}
 
     shown = []
-    suppressed_counts = {}
 
     # 5. 各銘柄について前営業日15:30以降の掲示板投稿を集め、声をまとめる
-    #    (カテゴリがミュートされている銘柄は、掲示板取得もClaude呼び出しも行わず
-    #    スキップする。「クソ株」のようなカテゴリはまさに詳細を見たくない銘柄
-    #    であることが多く、無駄なトークン消費を避けるため)
     for s in surges:
         code, name, pct = s["code"], s["name"], s["change_pct"]
-        category = tags.get(code)
-        s["category"] = category
         s["kabutan_comment"] = kabutan_comments.get(code) or "記載なし"
-
-        if category and category in mute_categories:
-            suppressed_counts[category] = suppressed_counts.get(category, 0) + 1
-            continue
 
         bbs_posts = research.get_yahoo_bbs(code, bbs_cutoff)
 
@@ -181,7 +163,7 @@ def main():
         cost_line = f"💰 本日のClaude判定コスト: 約{cost_jpy:.1f}円 ({CLAUDE_MODEL}, {claude_calls}件判定)"
 
     for content, components in build_messages(
-        shown, suppressed_counts, muted_count, total_found, cost_line
+        shown, muted_count, total_found, cost_line
     ):
         print(content)
         print("---")

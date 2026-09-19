@@ -5,18 +5,9 @@
   !help                          … コマンド一覧を表示
   !mute <証券コード...> [期間]    … 銘柄(複数可)を通知しない。期間指定で自動解除
   !unmute <証券コード...>         … ミュート解除(複数可)
-  !muted                         … 現在のミュート設定(銘柄・カテゴリ)を表示
+  !muted                         … 現在のミュート銘柄を表示
 
-  !tag <証券コード...> <カテゴリ名> … 銘柄(複数可)にカテゴリを手動で付与する
-  !tagmute <証券コード...> <カテゴリ名> … タグ付けとカテゴリのミュートを同時に行う
-  !untag <証券コード...>          … タグを削除(複数可)
-  !tags                          … 現在のタグ付け一覧を表示
-  !mutecat <カテゴリ名>           … そのカテゴリの銘柄をまとめて非表示にする(「◯◯ N件」表示)
-  !unmutecat <カテゴリ名>         … カテゴリのミュート解除
-
-カテゴリ(「クソ株」等)はAIが自動判定するのではなく、ここでユーザーが手動で
-付与したタグに基づく。掲示板・SNSの断片情報からの自動判定は誤判定
-(ハルシネーション)のリスクがあるため採用していない。
+銘柄ごとの非表示はDiscordのボタン(1か月/3か月/一生)からも行える。
 
 反映は次回の実行(1日1回)からになる。
 """
@@ -52,12 +43,7 @@ def _parse_duration_days(token: str) -> int | None:
 
 
 def _help_text() -> str:
-    tags = storage.load("tags.json", {})
-    if tags:
-        tag_list = "\n".join(f"  ・{code} → {cat}" for code, cat in sorted(tags.items()))
-    else:
-        tag_list = "  (なし)"
-    return f"""**📈 株価急騰ウォッチ コマンド一覧**
+    return """**📈 株価急騰ウォッチ コマンド一覧**
 (このチャンネルに打ち込んでください。反映は次回の実行(1日1回)からになります)
 
 `!mute <証券コード...> [期間]`
@@ -67,31 +53,12 @@ def _help_text() -> str:
 `!unmute <証券コード...>`
   ミュートを解除します(複数可、例: `!unmute 2330 6203`)
 `!muted`
-  現在のミュート設定(銘柄・カテゴリ)を表示します
+  現在のミュート銘柄を表示します
 
-`!tag <証券コード...> <カテゴリ名>`
-  銘柄にカテゴリを手動で付与します。複数銘柄をまとめて指定できます
-  (例: `!tag 8995 クソ株` / `!tag 8995 6203 4594 クソ株`)
-  末尾の1語がカテゴリ名、それ以外は全て証券コードとして扱われます
-  カテゴリはAIが自動判定するのではなく、ここで付けたタグのみが使われます
-`!tagmute <証券コード...> <カテゴリ名>`
-  タグ付けと同時にそのカテゴリをミュートします(`!tag` + `!mutecat` を1回で)
-  (例: `!tagmute 8995 6203 4594 クソ株`)
-`!untag <証券コード...>`
-  タグを削除します(複数可、例: `!untag 8995 6203`)
-`!tags`
-  現在のタグ付け一覧を表示します
-`!mutecat <カテゴリ名>`
-  そのカテゴリが付いた銘柄を詳細表示せず「カテゴリ名 N件」のようにまとめます
-  (例: `!mutecat クソ株`。タグが付いていない銘柄はまとめられず常に詳細表示されます)
-`!unmutecat <カテゴリ名>`
-  カテゴリのミュートを解除します
+各銘柄の投稿に付いているボタン(1か月非表示 / 3か月非表示 / 一生非表示)でも非表示にできます
 
 `!help`
   この一覧を表示します
-
-**現在のタグ付け**
-{tag_list}
 """
 
 
@@ -112,18 +79,6 @@ def handle_command(content: str) -> str | None:
         return _cmd_unmute(arg)
     if cmd == "muted":
         return _cmd_muted()
-    if cmd == "tag":
-        return _cmd_tag(arg)
-    if cmd == "tagmute":
-        return _cmd_tagmute(arg)
-    if cmd == "untag":
-        return _cmd_untag(arg)
-    if cmd == "tags":
-        return _cmd_tags()
-    if cmd == "mutecat":
-        return _cmd_mutecat(arg)
-    if cmd == "unmutecat":
-        return _cmd_unmutecat(arg)
 
     return f"❓ 知らないコマンドです: `!{cmd}`\n`!help` でコマンド一覧を見られます。"
 
@@ -219,132 +174,10 @@ def _cmd_unmute(arg: str) -> str:
 
 def _cmd_muted() -> str:
     mutes = _load_mutes()
-    cats = storage.load("mute_categories.json", [])
-    lines = ["**現在のミュート設定**"]
+    lines = ["**現在のミュート銘柄**"]
     if mutes:
         code_bits = [f"{c}({e}まで)" if e else c for c, e in sorted(mutes.items())]
         lines.append("銘柄: " + ", ".join(code_bits))
     else:
         lines.append("銘柄: (なし)")
-    lines.append("カテゴリ: " + (", ".join(cats) if cats else "(なし)"))
     return "\n".join(lines)
-
-
-def _parse_tag_args(arg: str, usage: str):
-    """`!tag`/`!tagmute` 共通の引数パース。末尾の1語がカテゴリ名、残りが証券コード。"""
-    bits = arg.split()
-    if len(bits) < 2:
-        return None, None, usage
-    *codes, cat = bits
-    return [c.upper() for c in codes], cat, None
-
-
-def _apply_tags(codes, cat) -> tuple[list, list]:
-    """codesすべてにcatタグを付与し、(新規に付けたコード, 更新したコード) を返す。"""
-    tags = storage.load("tags.json", {})
-    added, updated = [], []
-    for code in codes:
-        (updated if code in tags else added).append(code)
-        tags[code] = cat
-    storage.save("tags.json", tags)
-    return added, updated
-
-
-def _cmd_tag(arg: str) -> str:
-    codes, cat, usage = _parse_tag_args(
-        arg,
-        "使い方: `!tag 証券コード [証券コード...] カテゴリ名`\n"
-        "例: `!tag 8995 クソ株` / `!tag 8995 6203 4594 クソ株`\n"
-        "(末尾の1語がカテゴリ名、それ以外は全て証券コードとして扱われます)",
-    )
-    if usage:
-        return usage
-
-    added, updated = _apply_tags(codes, cat)
-    lines = [f"✅ タグを設定しました: **{cat}**"]
-    if added:
-        lines.append("新規: " + ", ".join(added))
-    if updated:
-        lines.append("更新: " + ", ".join(updated))
-    return "\n".join(lines)
-
-
-def _cmd_tagmute(arg: str) -> str:
-    codes, cat, usage = _parse_tag_args(
-        arg,
-        "使い方: `!tagmute 証券コード [証券コード...] カテゴリ名`\n"
-        "例: `!tagmute 8995 6203 4594 クソ株`\n"
-        "(タグ付けと同時にそのカテゴリをミュートします)",
-    )
-    if usage:
-        return usage
-
-    added, updated = _apply_tags(codes, cat)
-
-    mute_cats = storage.load("mute_categories.json", [])
-    already_muted = cat in mute_cats
-    if not already_muted:
-        mute_cats.append(cat)
-        storage.save("mute_categories.json", mute_cats)
-
-    mute_note = "(既にミュート済みのカテゴリでした)" if already_muted else "(次回実行からミュート反映)"
-    lines = [f"✅ タグを設定し、カテゴリ **{cat}** をミュートしました {mute_note}"]
-    if added:
-        lines.append("新規: " + ", ".join(added))
-    if updated:
-        lines.append("更新: " + ", ".join(updated))
-    return "\n".join(lines)
-
-
-def _cmd_untag(arg: str) -> str:
-    codes = [c.upper() for c in arg.split()]
-    if not codes:
-        return "使い方: `!untag 8995` / `!untag 8995 6203`"
-    tags = storage.load("tags.json", {})
-    removed, missing = [], []
-    for code in codes:
-        if code in tags:
-            del tags[code]
-            removed.append(code)
-        else:
-            missing.append(code)
-    storage.save("tags.json", tags)
-
-    lines = []
-    if removed:
-        lines.append("🗑️ タグを削除しました: " + ", ".join(removed))
-    if missing:
-        lines.append("タグが付いていません: " + ", ".join(missing))
-    return "\n".join(lines)
-
-
-def _cmd_tags() -> str:
-    tags = storage.load("tags.json", {})
-    if not tags:
-        return "現在、タグ付けされている銘柄はありません。`!tag` で登録できます。"
-    lines = ["**現在のタグ付け一覧**"]
-    for code, cat in sorted(tags.items()):
-        lines.append(f"・{code} → {cat}")
-    return "\n".join(lines)
-
-
-def _cmd_mutecat(arg: str) -> str:
-    name = arg.strip()
-    if not name:
-        return "使い方: `!mutecat クソ株`\n`!tags` で現在のタグ付け一覧を見られます。"
-    mute_cats = storage.load("mute_categories.json", [])
-    if name in mute_cats:
-        return f"すでにミュート済みのカテゴリです: {name}"
-    mute_cats.append(name)
-    storage.save("mute_categories.json", mute_cats)
-    return f"🔇 カテゴリをミュートしました: {name}(次回実行から反映)"
-
-
-def _cmd_unmutecat(arg: str) -> str:
-    name = arg.strip()
-    mute_cats = storage.load("mute_categories.json", [])
-    if name not in mute_cats:
-        return f"ミュートされていないカテゴリです: {name}"
-    mute_cats.remove(name)
-    storage.save("mute_categories.json", mute_cats)
-    return f"🔊 カテゴリのミュートを解除しました: {name}"
