@@ -40,6 +40,7 @@ USER_AGENT = (
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "ja,en;q=0.9"}
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 JST = ZoneInfo("Asia/Tokyo")
 
 
@@ -147,3 +148,44 @@ def summarize_bbs(code, name, pct, bbs_posts, cutoff, model=None):
     # 指示を無視して見出し行を付けてくることがあるため、念のため除去する
     summary = re.sub(r"^#+\s*.*\n+", "", summary).strip()
     return summary, usage
+
+
+class GeminiUnavailable(Exception):
+    """Geminiが使えない(無料枠の上限・キー無効・障害など)。呼び出し側でClaudeに切り替える。"""
+
+
+def summarize_bbs_gemini(code, name, pct, bbs_posts, cutoff, model=None):
+    """
+    Gemini API(無料枠)で「掲示板の声まとめ」を作る。プロンプトはClaude版と共通。
+    使えないとき(429/5xx/キー未設定など)は GeminiUnavailable を投げる。
+    """
+    key = os.environ.get("GEMINI_API_KEY")
+    if not key:
+        raise GeminiUnavailable("GEMINI_API_KEY not set")
+    model = model or os.environ.get("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
+
+    body = {
+        "contents": [{"parts": [{"text": _build_bbs_prompt(code, name, pct, bbs_posts, cutoff)}]}],
+        "generationConfig": {
+            "maxOutputTokens": 800,
+            "temperature": 0.3,
+            "thinkingConfig": {"thinkingBudget": 0},  # 思考トークンで出力枠を食われないように
+        },
+    }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    try:
+        resp = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
+    except requests.RequestException as e:
+        raise GeminiUnavailable(f"request failed: {e}") from e
+    if resp.status_code != 200:
+        raise GeminiUnavailable(f"HTTP {resp.status_code}: {resp.text[:200]}")
+
+    data = resp.json()
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+        summary = "".join(p.get("text", "") for p in parts).strip()
+    except (KeyError, IndexError, TypeError) as e:
+        raise GeminiUnavailable(f"unexpected response: {str(data)[:200]}") from e
+    if not summary:
+        raise GeminiUnavailable("empty response")
+    return re.sub(r"^#+\s*.*\n+", "", summary).strip()

@@ -13,6 +13,7 @@ GitHub Actions から毎日実行されるメイン処理。
   6. Discordに投稿する
 """
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -27,6 +28,10 @@ JST = ZoneInfo("Asia/Tokyo")
 THRESHOLD_PCT = float(os.environ.get("SURGE_THRESHOLD_PCT") or "10")
 MAX_CLAUDE_CALLS = int(os.environ.get("MAX_CLAUDE_CALLS_PER_RUN") or "40")
 CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL") or research.DEFAULT_MODEL
+
+# Gemini無料枠のレート制限(flashは毎分10回程度)に引っかからないよう間隔を空ける
+GEMINI_INTERVAL_SEC = 7.0
+GEMINI_MAX_CONSECUTIVE_FAILURES = 2
 
 # $ / 1M tokens (input, output) — https://docs.claude.com/ の価格表を参照
 PRICE_TABLE_USD = {
@@ -123,6 +128,9 @@ def main():
 
     have_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
     claude_calls = 0
+    gemini_calls = 0
+    gemini_failures = 0  # 連続失敗回数。上限に達したらその回はGeminiを諦めてClaudeに任せる
+    last_gemini_at = 0.0
     total_usage = {"input_tokens": 0, "output_tokens": 0}
 
     shown = []
@@ -135,7 +143,27 @@ def main():
         bbs_posts = research.get_yahoo_bbs(code, bbs_cutoff)
 
         bbs_summary = None
-        if have_key and claude_calls < MAX_CLAUDE_CALLS:
+
+        # まず無料のGeminiを試し、使えなければ(無料枠切れ等)Claudeに切り替える
+        if (
+            os.environ.get("GEMINI_API_KEY")
+            and gemini_failures < GEMINI_MAX_CONSECUTIVE_FAILURES
+        ):
+            wait = GEMINI_INTERVAL_SEC - (time.time() - last_gemini_at)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                last_gemini_at = time.time()
+                bbs_summary = research.summarize_bbs_gemini(
+                    code, name, pct, bbs_posts, bbs_cutoff
+                )
+                gemini_calls += 1
+                gemini_failures = 0
+            except research.GeminiUnavailable as e:
+                gemini_failures += 1
+                print(f"[main] Gemini unavailable for {code}: {e}")
+
+        if not bbs_summary and have_key and claude_calls < MAX_CLAUDE_CALLS:
             try:
                 bbs_summary, usage = research.summarize_bbs(
                     code, name, pct, bbs_posts, bbs_cutoff, model=CLAUDE_MODEL
@@ -153,14 +181,19 @@ def main():
         shown.append(s)
 
     cost_line = None
-    if claude_calls:
-        price_in, price_out = PRICE_TABLE_USD.get(CLAUDE_MODEL, (0.0, 0.0))
-        cost_usd = (
-            total_usage["input_tokens"] / 1_000_000 * price_in
-            + total_usage["output_tokens"] / 1_000_000 * price_out
+    if claude_calls or gemini_calls:
+        cost_jpy = 0.0
+        if claude_calls:
+            price_in, price_out = PRICE_TABLE_USD.get(CLAUDE_MODEL, (0.0, 0.0))
+            cost_usd = (
+                total_usage["input_tokens"] / 1_000_000 * price_in
+                + total_usage["output_tokens"] / 1_000_000 * price_out
+            )
+            cost_jpy = cost_usd * USD_JPY_RATE
+        cost_line = (
+            f"💰 本日のAI判定コスト: 約{cost_jpy:.1f}円 "
+            f"(Gemini無料枠 {gemini_calls}件 / Claude {claude_calls}件)"
         )
-        cost_jpy = cost_usd * USD_JPY_RATE
-        cost_line = f"💰 本日のClaude判定コスト: 約{cost_jpy:.1f}円 ({CLAUDE_MODEL}, {claude_calls}件判定)"
 
     for content, components in build_messages(
         shown, muted_count, total_found, cost_line
