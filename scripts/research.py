@@ -40,7 +40,7 @@ USER_AGENT = (
 HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "ja,en;q=0.9"}
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
 JST = ZoneInfo("Asia/Tokyo")
 
 
@@ -167,9 +167,8 @@ def summarize_bbs_gemini(code, name, pct, bbs_posts, cutoff, model=None):
     body = {
         "contents": [{"parts": [{"text": _build_bbs_prompt(code, name, pct, bbs_posts, cutoff)}]}],
         "generationConfig": {
-            "maxOutputTokens": 800,
+            "maxOutputTokens": 2000,  # 思考トークンが含まれても要約が途切れない余裕を持たせる
             "temperature": 0.3,
-            "thinkingConfig": {"thinkingBudget": 0},  # 思考トークンで出力枠を食われないように
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"

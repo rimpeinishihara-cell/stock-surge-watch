@@ -29,7 +29,7 @@ THRESHOLD_PCT = float(os.environ.get("SURGE_THRESHOLD_PCT") or "10")
 MAX_CLAUDE_CALLS = int(os.environ.get("MAX_CLAUDE_CALLS_PER_RUN") or "40")
 CLAUDE_MODEL = os.environ.get("ANTHROPIC_MODEL") or research.DEFAULT_MODEL
 
-# Gemini無料枠のレート制限(flashは毎分10回程度)に引っかからないよう間隔を空ける
+# Gemini無料枠のレート制限(毎分10回程度を想定)に引っかからないよう間隔を空ける
 GEMINI_INTERVAL_SEC = 7.0
 GEMINI_MAX_CONSECUTIVE_FAILURES = 2
 
