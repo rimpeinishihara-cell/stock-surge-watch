@@ -3,8 +3,7 @@ Yahoo!ファイナンス掲示板から「掲示板の声まとめ」を作る�
 
 カテゴリ分類(クソ株・バイオ株など)はAIに判定させない。掲示板・SNSの断片的な
 情報から推測するため誤判定(ハルシネーション)のリスクがあり、銘柄への評価に
-関わる判定を自動化すべきではないため、ユーザーが `!tag` コマンドで手動で
-付与する方式にしている(commands.py参照)。
+関わる判定を自動化すべきではないため、カテゴリ機能自体を持たない。
 
 なお、株探(kabutan)発のコメントは、AIに要約・抜粋させるのではなく
 yahoo_stocks.fetch_kabutan_ranking_comments() でスクレイピングにより直接
@@ -27,6 +26,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -172,10 +172,17 @@ def summarize_bbs_gemini(code, name, pct, bbs_posts, cutoff, model=None):
         },
     }
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    try:
-        resp = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
-    except requests.RequestException as e:
-        raise GeminiUnavailable(f"request failed: {e}") from e
+    resp = None
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, json=body, headers={"x-goog-api-key": key}, timeout=60)
+        except requests.RequestException as e:
+            raise GeminiUnavailable(f"request failed: {e}") from e
+        # 503(混雑)は一時的なことが多いので間を空けて再試行する。429(無料枠切れ)は即諦める
+        if resp.status_code == 503 and attempt < 2:
+            time.sleep(8 * (attempt + 1))
+            continue
+        break
     if resp.status_code != 200:
         raise GeminiUnavailable(f"HTTP {resp.status_code}: {resp.text[:200]}")
 
